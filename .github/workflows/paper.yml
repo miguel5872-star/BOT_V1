@@ -1,11 +1,19 @@
 name: bot de papel
 
 on:
-  schedule:
-    # cada hora en punto (UTC). GitHub puede retrasarlo 5-20 min si va cargado;
-    # para un horizonte de 48 h es irrelevante.
-    - cron: "0 * * * *"
-  workflow_dispatch:        # permite lanzarlo a mano desde la pestaña Actions
+  # CRON DESACTIVADO. Los runners de GitHub estan en Azure US y tanto Bybit
+  # (HTTP 403, CloudFront geo-bloqueo) como Binance (HTTP 451) rechazan esas
+  # IP. Ver diagnostico_resultado.txt. La estrategia solo tiene senal
+  # explotable en esos dos exchanges (Sharpe 5.3-6.6 frente a 1.1-1.6 en
+  # Bitget, Gate.io y MEXC), asi que hace falta ejecutar desde fuera de EEUU.
+  #
+  # Para reactivarlo con un runner propio fuera de EEUU:
+  #   1. descomentar el bloque schedule
+  #   2. cambiar 'runs-on: ubuntu-latest' por 'runs-on: self-hosted'
+  #
+  # schedule:
+  #   - cron: "0 * * * *"
+  workflow_dispatch:        # se puede lanzar a mano desde la pestaña Actions
 
 permissions:
   contents: write

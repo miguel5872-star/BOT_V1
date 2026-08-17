@@ -19,6 +19,36 @@ Ultima actualizacion: **2026-08-17 01:46 UTC**
 Hash del registro: `5f6265f075963fa0c26b75595da856dc112ce743`
 <!--/ESTADO-->
 
+## Estado del despliegue
+
+**El cron de GitHub Actions esta desactivado.** Los runners de GitHub corren en
+Azure US y los dos exchanges donde la estrategia tiene senal explotable
+rechazan esas IP:
+
+```
+Bybit    HTTP 403  "CloudFront is configured to block access from your country"
+Binance  HTTP 451  "Service unavailable from a restricted location"
+```
+
+Se probaron los exchanges que si responden desde el runner, y la senal alli es
+mucho mas debil:
+
+| Exchange | Simbolos | Sharpe | Correlacion con Binance |
+|---|---|---|---|
+| Binance | 345 | 6,59 | — |
+| Bybit | 391 | 5,27 | +0,58 |
+| Bitget | 404 | 1,56 | +0,34 |
+| Gate.io | 203 | 1,59 | +0,11 |
+| MEXC | 161 | 1,13 | +0,26 |
+
+Bitget tiene tantos simbolos como Bybit y aun asi rinde un tercio, luego no es
+un problema de tamano del universo: en los mercados profundos el funding
+refleja presion real de posicionamiento, mientras que en los secundarios el
+perpetuo sigue a Binance y su funding es una senal rezagada.
+
+Para reactivarlo hace falta un runner fuera de EEUU. Ver `diagnostico.py` y
+`diagnostico_resultado.txt`.
+
 ## Qué hace
 
 Ordena unos 400 perpetuos USDT por el funding acumulado de las últimas 72 horas,
