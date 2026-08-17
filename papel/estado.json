@@ -162,9 +162,9 @@
    },
    "peso": 1.0,
    "coste_cierre": 0.002,
-   "valor_actual": -0.0005524866011592431
+   "valor_actual": -0.0005184200968107429
   }
  ],
  "paso": 1,
- "pasos_ejecutados": 3
+ "pasos_ejecutados": 4
 }

@@ -1,7 +1,12 @@
 """
-Genera index.html: un panel autocontenido con la curva de patrimonio, el
-drawdown y las metricas. Sin librerias externas ni peticiones de red, para que
-funcione igual abierto en local o servido por GitHub Pages.
+Genera index.html: panel interactivo autocontenido.
+
+Sin librerias externas ni peticiones de red: los datos se incrustan en el HTML,
+de modo que funciona igual con doble clic en local que servido por GitHub Pages.
+
+Nota sobre la granularidad: el bot marca una vez por ciclo (por defecto cada
+hora), asi que la resolucion nativa es esa. No hay datos por minuto ni por
+segundo, y el panel no finge tenerlos: ofrece rango temporal y agregacion.
 
     python grafica.py
 """
@@ -14,217 +19,624 @@ import pandas as pd
 
 RAIZ = os.path.dirname(os.path.abspath(__file__))
 PAPEL = os.path.join(RAIZ, "papel")
-CURVA = os.path.join(PAPEL, "curva.csv")
-REGISTRO = os.path.join(PAPEL, "registro.jsonl")
-ESTADO = os.path.join(PAPEL, "estado.json")
 SALIDA = os.path.join(RAIZ, "index.html")
+H_TENENCIA = 48
 
 
-def leer():
-    if not os.path.exists(CURVA):
-        return None
-    d = pd.read_csv(CURVA, parse_dates=["fecha"]).drop_duplicates("ts")
-    return d.set_index("fecha").sort_index()
+def cargar_curva():
+    p = os.path.join(PAPEL, "curva.csv")
+    if not os.path.exists(p):
+        return pd.DataFrame()
+    d = pd.read_csv(p, parse_dates=["fecha"]).drop_duplicates("ts")
+    return d.sort_values("ts").reset_index(drop=True)
 
 
-def poli(xs, ys, w, h, x0, x1, y0, y1):
-    """Convierte series a coordenadas de un SVG."""
-    if x1 == x0:
-        x1 = x0 + 1
-    if y1 == y0:
-        y1 = y0 + 1
-    px = [(x - x0) / (x1 - x0) * w for x in xs]
-    py = [h - (y - y0) / (y1 - y0) * h for y in ys]
-    return " ".join(f"{a:.1f},{b:.1f}" for a, b in zip(px, py))
-
-
-def grafico(d, columna, color, relleno, titulo, sufijo="%", cero=True):
-    if len(d) < 2:
-        return f'<div class="vacio">{titulo}: hacen falta al menos 2 marcas</div>'
-    W, H = 900, 220
-    xs = d.index.astype("int64").to_numpy() / 1e9
-    ys = d[columna].to_numpy(dtype=float)
-    y0, y1 = float(np.nanmin(ys)), float(np.nanmax(ys))
-    margen = max((y1 - y0) * 0.12, 0.05)
-    y0, y1 = y0 - margen, y1 + margen
-    if cero and y0 > 0:
-        y0 = 0
-    if cero and y1 < 0:
-        y1 = 0
-    pts = poli(xs, ys, W, H, xs[0], xs[-1], y0, y1)
-    base = H - (0 - y0) / (y1 - y0) * H if y0 <= 0 <= y1 else H
-    area = f"0,{base:.1f} {pts} {W},{base:.1f}"
-    ticks = ""
-    for frac in (0, .25, .5, .75, 1):
-        v = y1 - frac * (y1 - y0)
-        y = frac * H
-        ticks += (f'<line x1="0" y1="{y:.1f}" x2="{W}" y2="{y:.1f}" class="rej"/>'
-                  f'<text x="4" y="{y-4:.1f}" class="eje">{v:+.2f}{sufijo}</text>')
-    fechas = ""
-    for frac in (0, .5, 1):
-        i = int(frac * (len(d) - 1))
-        fechas += (f'<text x="{frac*W:.0f}" y="{H+16}" class="eje" '
-                   f'text-anchor="{"start" if frac==0 else "end" if frac==1 else "middle"}">'
-                   f'{d.index[i]:%d %b %H:%M}</text>')
-    return f"""<div class="tarjeta">
-  <h3>{titulo}</h3>
-  <svg viewBox="0 0 {W} {H+24}" preserveAspectRatio="none" class="svg">
-    {ticks}
-    <polyline points="{area}" fill="{relleno}" stroke="none"/>
-    <polyline points="{pts}" fill="none" stroke="{color}" stroke-width="2"
-              stroke-linejoin="round"/>
-    {fechas}
-  </svg>
-</div>"""
-
-
-def metricas(d):
-    if d is None or len(d) == 0:
-        return {}
-    eq = d["patrimonio"] / d["patrimonio"].iloc[0]
-    dd = (eq / eq.cummax() - 1) * 100
-    dia = d["patrimonio"].resample("1D").last().dropna().pct_change().dropna()
-    m = {"Patrimonio": f"{d['patrimonio'].iloc[-1]:,.2f} USDT",
-         "Retorno": f"{d['retorno_acum_pct'].iloc[-1]:+.3f}%",
-         "Max drawdown": f"{dd.min():.2f}%",
-         "Marcas": f"{len(d)}",
-         "Dias": f"{len(dia)}",
-         "Tramos abiertos": f"{int(d['tramos_abiertos'].iloc[-1])}/3"}
-    if len(dia) > 2 and dia.std() > 0:
-        m["Retorno diario"] = f"{dia.mean()*100:+.3f}%"
-        m["Volatilidad diaria"] = f"{dia.std()*100:.3f}%"
-        m["Sharpe anualizado"] = f"{dia.mean()/dia.std()*np.sqrt(365):.2f}"
-        m["Dias positivos"] = f"{(dia>0).mean()*100:.0f}%"
-    return m, dd
-
-
-def cierres():
-    if not os.path.exists(REGISTRO):
-        return [], 0
-    filas, tardios = [], 0
-    with open(REGISTRO, encoding="utf-8") as fh:
+def cargar_registro():
+    p = os.path.join(PAPEL, "registro.jsonl")
+    if not os.path.exists(p):
+        return [], [], None
+    aperturas, cierres, init = [], [], None
+    with open(p, encoding="utf-8") as fh:
         for linea in fh:
-            ev = json.loads(linea)
-            if ev.get("tipo") == "cierre":
-                filas.append(ev)
-                tardios += bool(ev.get("cierre_tardio"))
-    return filas[-12:][::-1], tardios
+            try:
+                ev = json.loads(linea)
+            except json.JSONDecodeError:
+                continue
+            if ev.get("tipo") == "apertura":
+                aperturas.append(ev)
+            elif ev.get("tipo") == "cierre":
+                cierres.append(ev)
+            elif ev.get("tipo") == "init":
+                init = ev
+    return aperturas, cierres, init
 
 
-def abiertas():
-    if not os.path.exists(ESTADO):
-        return []
-    e = json.load(open(ESTADO, encoding="utf-8"))
-    return [{"id": t["id"], "abierto": t["abierto"][:16],
-             "n": len(t["largos"]) + len(t["cortos"]),
-             "peso": t["peso"]} for t in e.get("tramos", [])]
+def cargar_estado():
+    p = os.path.join(PAPEL, "estado.json")
+    if not os.path.exists(p):
+        return {}
+    with open(p, encoding="utf-8") as fh:
+        return json.load(fh)
 
 
-d = leer()
-ahora = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+def construir_tramos(aperturas, cierres, estado):
+    """Une aperturas con cierres para pintar la linea temporal."""
+    por_id = {c["tramo"]: c for c in cierres}
+    abiertos = {t["id"]: t for t in estado.get("tramos", [])}
+    out = []
+    for a in aperturas:
+        i = a["tramo"]
+        c = por_id.get(i)
+        out.append({
+            "id": i,
+            "ini": a["ts"],
+            "fin": c["ts"] if c else None,
+            "horas": c["horas_reales"] if c else None,
+            "ret": c["retorno_bruto"] if c else None,
+            "tardio": bool(c.get("cierre_tardio")) if c else False,
+            "peso": a.get("peso"),
+            "n": len(a.get("largos", [])) + len(a.get("cortos", [])),
+            "abierto": i in abiertos,
+        })
+    return out
 
-if d is None or len(d) == 0:
-    cuerpo = '<div class="vacio">Todavia no hay marcas. Ejecuta <code>python bot.py step</code>.</div>'
-    resumen = ""
-else:
-    m, dd = metricas(d)
-    d = d.copy()
-    d["drawdown"] = dd
-    resumen = "".join(
-        f'<div class="m"><span class="k">{k}</span><span class="v">{v}</span></div>'
-        for k, v in m.items())
-    lista, tardios = cierres()
-    tabla = ""
-    if lista:
-        filas = "".join(
-            f"<tr><td>{c['fecha'][:16]}</td><td>{c['tramo']}</td>"
-            f"<td>{c['horas_reales']:.1f} h{' ⚠' if c.get('cierre_tardio') else ''}</td>"
-            f"<td class=\"{'pos' if c['retorno_bruto']>0 else 'neg'}\">"
-            f"{c['retorno_bruto']*100:+.3f}%</td>"
-            f"<td>{c.get('n_largos','?')}L / {c.get('n_cortos','?')}C</td></tr>"
-            for c in lista)
-        tabla = f"""<div class="tarjeta"><h3>Ultimos cierres de tramo</h3>
-        <table><tr><th>Fecha</th><th>Tramo</th><th>Duracion</th>
-        <th>Bruto</th><th>Cesta</th></tr>{filas}</table>
-        <p class="nota">Cierres tardios acumulados: {tardios}
-        (un tramo se marca tardio si supera 48 h + 2 de margen, senal de que
-        hubo un hueco de ejecucion)</p></div>"""
-    ab = abiertas()
-    tabla_ab = ""
-    if ab:
-        filas = "".join(f"<tr><td>{t['id']}</td><td>{t['abierto']}</td>"
-                        f"<td>{t['n']} posiciones</td><td>{t['peso']:.2f}x</td></tr>"
-                        for t in ab)
-        tabla_ab = f"""<div class="tarjeta"><h3>Tramos abiertos</h3>
-        <table><tr><th>Id</th><th>Abierto</th><th>Cesta</th><th>Peso</th></tr>
-        {filas}</table></div>"""
-    cuerpo = (grafico(d, "retorno_acum_pct", "var(--linea)", "var(--area)",
-                      "Retorno acumulado")
-              + grafico(d, "drawdown", "var(--rojo)", "var(--areaRojo)",
-                        "Drawdown", cero=True)
-              + tabla_ab + tabla)
 
-html = f"""<title>Bot de papel — momentum de funding</title>
+def posiciones_abiertas(estado):
+    out = []
+    for t in estado.get("tramos", []):
+        out.append({
+            "id": t["id"], "ini": t["abierto_ms"], "peso": t["peso"],
+            "largos": sorted(t.get("largos", {}).keys()),
+            "cortos": sorted(t.get("cortos", {}).keys()),
+        })
+    return out
+
+
+d = cargar_curva()
+aperturas, cierres, init = cargar_registro()
+estado = cargar_estado()
+tramos = construir_tramos(aperturas, cierres, estado)
+abiertas = posiciones_abiertas(estado)
+capital = (estado.get("capital_inicial")
+           or (init or {}).get("capital") or 10000.0)
+apal = estado.get("apalancamiento") or (init or {}).get("apalancamiento") or 3.0
+
+datos = {
+    "capital": capital,
+    "apalancamiento": apal,
+    "tenencia": H_TENENCIA,
+    "generado": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"),
+    "serie": [] if d.empty else [
+        {"t": int(r.ts), "p": float(r.patrimonio), "r": float(r.retorno_acum_pct),
+         "l": float(r.latente), "e": float(r.efectivo),
+         "n": int(r.tramos_abiertos)} for r in d.itertuples()],
+    "tramos": tramos,
+    "abiertas": abiertas,
+    "cierres": [{"t": c["ts"], "id": c["tramo"], "h": c["horas_reales"],
+                 "r": c["retorno_bruto"], "peso": c.get("peso"),
+                 "tardio": bool(c.get("cierre_tardio")),
+                 "nl": c.get("n_largos"), "ns": c.get("n_cortos")}
+                for c in cierres],
+}
+
+HTML = """<title>Panel — bot de papel de funding</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
-:root {{
-  --fondo:#fbfbfa; --texto:#1c1b19; --suave:#6b6960; --borde:#e3e1dc;
-  --tarjeta:#ffffff; --linea:#2f6f4f; --area:rgba(47,111,79,.12);
-  --rojo:#a33b32; --areaRojo:rgba(163,59,50,.12); --rej:#efedea;
+:root{
+  --bg:#faf9f7; --panel:#ffffff; --linea:#e8e5e0; --linea2:#f2efeb;
+  --tx:#1a1917; --tx2:#6a675f; --tx3:#96938a;
+  --acento:#2b6cb0; --acentoSuave:rgba(43,108,176,.10);
+  --pos:#1f7a4d; --posSuave:rgba(31,122,77,.12);
+  --neg:#b3453a; --negSuave:rgba(179,69,58,.12);
+  --avisoBg:#fdf6e3; --avisoTx:#8a6d1f; --avisoBd:#e8dcb8;
+  --sombra:0 1px 2px rgba(20,18,15,.05),0 1px 8px rgba(20,18,15,.04);
+  --r:10px;
+}
+@media (prefers-color-scheme:dark){:root:not([data-tema="claro"]){
+  --bg:#121214; --panel:#1a1a1d; --linea:#2a2a2e; --linea2:#232326;
+  --tx:#eceae6; --tx2:#9b988f; --tx3:#6e6b64;
+  --acento:#6aa9e0; --acentoSuave:rgba(106,169,224,.12);
+  --pos:#5cbd8a; --posSuave:rgba(92,189,138,.14);
+  --neg:#e0796e; --negSuave:rgba(224,121,110,.14);
+  --avisoBg:#2a2415; --avisoTx:#d9be6a; --avisoBd:#443a1e;
+  --sombra:0 1px 2px rgba(0,0,0,.3);
 }}
-@media (prefers-color-scheme: dark) {{
-  :root:not([data-theme="light"]) {{
-    --fondo:#17171a; --texto:#eceae5; --suave:#9a978e; --borde:#2c2c30;
-    --tarjeta:#1e1e22; --linea:#63b58a; --area:rgba(99,181,138,.14);
-    --rojo:#e0736a; --areaRojo:rgba(224,115,106,.14); --rej:#26262a;
-  }}
-}}
-* {{ box-sizing:border-box; }}
-body {{ margin:0; padding:24px 16px 48px; background:var(--fondo); color:var(--texto);
-  font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }}
-.env {{ max-width:940px; margin:0 auto; }}
-h1 {{ font-size:22px; margin:0 0 4px; letter-spacing:-.01em; }}
-.sub {{ color:var(--suave); font-size:13px; margin:0 0 22px; }}
-.res {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
-  gap:1px; background:var(--borde); border:1px solid var(--borde);
-  border-radius:10px; overflow:hidden; margin-bottom:22px; }}
-.m {{ background:var(--tarjeta); padding:12px 14px; display:flex;
-  flex-direction:column; gap:3px; }}
-.k {{ font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--suave); }}
-.v {{ font-size:19px; font-variant-numeric:tabular-nums; }}
-.tarjeta {{ background:var(--tarjeta); border:1px solid var(--borde);
-  border-radius:10px; padding:16px 18px; margin-bottom:18px; }}
-h3 {{ font-size:13px; text-transform:uppercase; letter-spacing:.06em;
-  color:var(--suave); margin:0 0 12px; font-weight:600; }}
-.svg {{ width:100%; height:auto; display:block; overflow:visible; }}
-.rej {{ stroke:var(--rej); stroke-width:1; }}
-.eje {{ fill:var(--suave); font-size:11px; font-family:inherit; }}
-table {{ width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums; }}
-th {{ text-align:left; font-size:11px; text-transform:uppercase;
-  letter-spacing:.05em; color:var(--suave); font-weight:600;
-  padding:0 10px 8px 0; }}
-td {{ padding:6px 10px 6px 0; border-top:1px solid var(--borde); font-size:14px; }}
-.pos {{ color:var(--linea); }} .neg {{ color:var(--rojo); }}
-.vacio {{ background:var(--tarjeta); border:1px dashed var(--borde);
-  border-radius:10px; padding:28px; text-align:center; color:var(--suave); }}
-.nota {{ font-size:12px; color:var(--suave); margin:12px 0 0; }}
-code {{ background:var(--rej); padding:2px 6px; border-radius:4px; font-size:13px; }}
-footer {{ color:var(--suave); font-size:12px; margin-top:26px;
-  border-top:1px solid var(--borde); padding-top:14px; }}
+:root[data-tema="oscuro"]{
+  --bg:#121214; --panel:#1a1a1d; --linea:#2a2a2e; --linea2:#232326;
+  --tx:#eceae6; --tx2:#9b988f; --tx3:#6e6b64;
+  --acento:#6aa9e0; --acentoSuave:rgba(106,169,224,.12);
+  --pos:#5cbd8a; --posSuave:rgba(92,189,138,.14);
+  --neg:#e0796e; --negSuave:rgba(224,121,110,.14);
+  --avisoBg:#2a2415; --avisoTx:#d9be6a; --avisoBd:#443a1e;
+  --sombra:0 1px 2px rgba(0,0,0,.3);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--tx);
+  font:14px/1.5 ui-sans-serif,-apple-system,"Segoe UI",Roboto,sans-serif;
+  padding:22px 18px 60px;-webkit-font-smoothing:antialiased}
+.env{max-width:1120px;margin:0 auto}
+.num{font-variant-numeric:tabular-nums;font-feature-settings:"tnum"}
+
+header{display:flex;align-items:flex-start;justify-content:space-between;
+  gap:16px;flex-wrap:wrap;margin-bottom:20px}
+h1{font-size:19px;font-weight:640;letter-spacing:-.015em}
+.sub{color:var(--tx2);font-size:12.5px;margin-top:3px}
+.chip{display:inline-flex;align-items:center;gap:6px;background:var(--panel);
+  border:1px solid var(--linea);border-radius:999px;padding:4px 11px;
+  font-size:12px;color:var(--tx2)}
+.punto{width:6px;height:6px;border-radius:50%;background:var(--pos)}
+.btema{background:var(--panel);border:1px solid var(--linea);color:var(--tx2);
+  border-radius:8px;padding:6px 11px;cursor:pointer;font-size:12.5px;
+  font-family:inherit}
+.btema:hover{color:var(--tx);border-color:var(--tx3)}
+
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(148px,1fr));
+  gap:10px;margin-bottom:18px}
+.kpi{background:var(--panel);border:1px solid var(--linea);border-radius:var(--r);
+  padding:13px 15px;box-shadow:var(--sombra)}
+.kpi .et{font-size:10.5px;text-transform:uppercase;letter-spacing:.07em;
+  color:var(--tx3);font-weight:600;margin-bottom:5px}
+.kpi .va{font-size:21px;font-weight:600;letter-spacing:-.02em;line-height:1.15}
+.kpi .nt{font-size:11.5px;color:var(--tx2);margin-top:3px}
+.pos{color:var(--pos)} .neg{color:var(--neg)} .neu{color:var(--tx)}
+
+.barra{display:flex;gap:14px;flex-wrap:wrap;align-items:center;
+  margin-bottom:14px}
+.grupo{display:flex;align-items:center;gap:7px}
+.grupo>span{font-size:10.5px;text-transform:uppercase;letter-spacing:.07em;
+  color:var(--tx3);font-weight:600}
+.seg{display:inline-flex;background:var(--panel);border:1px solid var(--linea);
+  border-radius:8px;overflow:hidden}
+.seg button{background:none;border:none;border-right:1px solid var(--linea);
+  color:var(--tx2);padding:5px 11px;font-size:12.5px;cursor:pointer;
+  font-family:inherit;font-variant-numeric:tabular-nums}
+.seg button:last-child{border-right:none}
+.seg button:hover{color:var(--tx);background:var(--linea2)}
+.seg button[aria-pressed="true"]{background:var(--acento);color:#fff;
+  font-weight:560}
+
+.tarj{background:var(--panel);border:1px solid var(--linea);
+  border-radius:var(--r);padding:16px 18px 12px;margin-bottom:14px;
+  box-shadow:var(--sombra)}
+.tarj h2{font-size:11px;text-transform:uppercase;letter-spacing:.07em;
+  color:var(--tx3);font-weight:640;margin-bottom:2px}
+.tarj .h2n{font-size:12px;color:var(--tx2);margin-bottom:12px}
+.lienzo{position:relative;width:100%}
+svg{display:block;width:100%;overflow:visible}
+.rej{stroke:var(--linea2);stroke-width:1}
+.ejeTx{fill:var(--tx3);font-size:10.5px;font-family:inherit;
+  font-variant-numeric:tabular-nums}
+.cruz{stroke:var(--tx3);stroke-width:1;stroke-dasharray:3 3}
+.tip{position:absolute;pointer-events:none;background:var(--panel);
+  border:1px solid var(--linea);border-radius:8px;padding:8px 11px;
+  font-size:12px;box-shadow:0 4px 16px rgba(0,0,0,.14);white-space:nowrap;
+  opacity:0;transition:opacity .1s;z-index:5}
+.tip b{font-weight:600;font-variant-numeric:tabular-nums}
+.tip .f{color:var(--tx3);font-size:11px;margin-bottom:3px}
+
+table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+th{text-align:left;font-size:10.5px;text-transform:uppercase;
+  letter-spacing:.06em;color:var(--tx3);font-weight:640;padding:0 12px 8px 0;
+  white-space:nowrap}
+td{padding:7px 12px 7px 0;border-top:1px solid var(--linea2);font-size:13px}
+tbody tr:hover{background:var(--linea2)}
+.der{text-align:right}
+.eti{display:inline-block;font-size:10.5px;padding:1px 6px;border-radius:5px;
+  background:var(--avisoBg);color:var(--avisoTx);border:1px solid var(--avisoBd);
+  font-weight:560}
+.simb{display:flex;flex-wrap:wrap;gap:4px;margin-top:5px}
+.simb span{font-size:11px;background:var(--linea2);color:var(--tx2);
+  padding:2px 6px;border-radius:5px;font-family:ui-monospace,monospace}
+details{margin-top:8px}
+summary{cursor:pointer;font-size:12px;color:var(--tx2);list-style:none}
+summary::-webkit-details-marker{display:none}
+summary:before{content:"▸ ";color:var(--tx3)}
+details[open] summary:before{content:"▾ "}
+.vacio{padding:34px;text-align:center;color:var(--tx2);font-size:13.5px}
+.aviso{background:var(--avisoBg);border:1px solid var(--avisoBd);
+  color:var(--avisoTx);border-radius:var(--r);padding:11px 14px;
+  font-size:12.5px;margin-bottom:14px}
+footer{color:var(--tx3);font-size:11.5px;margin-top:26px;
+  border-top:1px solid var(--linea);padding-top:14px;line-height:1.65}
+.dosCol{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media (max-width:800px){.dosCol{grid-template-columns:1fr}}
 </style>
+
 <div class="env">
-  <h1>Bot de papel — momentum de funding</h1>
-  <p class="sub">Mercado neutral sobre perpetuos USDT. Dinero ficticio.
-     Generado el {ahora}.</p>
-  <div class="res">{resumen}</div>
-  {cuerpo}
+  <header>
+    <div>
+      <h1>Bot de papel · momentum de funding</h1>
+      <div class="sub" id="sub"></div>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center">
+      <span class="chip"><span class="punto"></span><span id="estado"></span></span>
+      <button class="btema" id="btema">Tema</button>
+    </div>
+  </header>
+
+  <div id="avisos"></div>
+  <div class="kpis" id="kpis"></div>
+
+  <div class="barra">
+    <div class="grupo"><span>Rango</span>
+      <div class="seg" id="rango"></div></div>
+    <div class="grupo"><span>Agregación</span>
+      <div class="seg" id="agreg"></div></div>
+  </div>
+
+  <div class="tarj">
+    <h2>Patrimonio</h2>
+    <div class="h2n" id="tituloEq"></div>
+    <div class="lienzo" id="cEq"><div class="tip" id="tipEq"></div></div>
+  </div>
+
+  <div class="dosCol">
+    <div class="tarj">
+      <h2>Drawdown</h2>
+      <div class="h2n">Caída desde el máximo previo</div>
+      <div class="lienzo" id="cDd"><div class="tip" id="tipDd"></div></div>
+    </div>
+    <div class="tarj">
+      <h2>Retorno por periodo</h2>
+      <div class="h2n" id="tituloBar"></div>
+      <div class="lienzo" id="cBar"><div class="tip" id="tipBar"></div></div>
+    </div>
+  </div>
+
+  <div class="tarj">
+    <h2>Línea temporal de tramos</h2>
+    <div class="h2n">Tres carteras solapadas, cada una con 48 h de tenencia,
+      abriéndose cada 16 h</div>
+    <div class="lienzo" id="cTr"><div class="tip" id="tipTr"></div></div>
+  </div>
+
+  <div class="tarj" id="tAb"></div>
+  <div class="tarj" id="tCi"></div>
+
   <footer>
-    Estrategia: funding acumulado de 72 h, largo el 20% superior y corto el 20%
-    inferior, tres tramos solapados de 48 h. Costes aplicados: 0,05% de comision
-    y 0,05% de deslizamiento por lado.<br>
+    <b>Estrategia</b> · funding acumulado de 72 h sobre los perpetuos USDT con
+    volumen suficiente; largo el 20% con la señal más alta, corto el 20% más
+    baja, mismo nocional en cada pata. Tres tramos solapados de 48 h.
+    Costes aplicados: 0,05% de comisión y 0,05% de deslizamiento por lado.<br>
+    <b>Datos</b> · API pública de producción de Bybit. Dinero ficticio.
+    El registro encadena hashes SHA-256; <code>python bot.py verificar</code>
+    comprueba que no se ha reescrito.<br>
     Esto no es asesoramiento financiero.
   </footer>
-</div>"""
+</div>
 
-open(SALIDA, "w", encoding="utf-8").write(html)
-print(f"Panel generado: {SALIDA}")
+<script>
+const D = __DATOS__;
+const $ = s => document.querySelector(s);
+const fnum = (v,d=2) => v.toLocaleString('es-ES',{minimumFractionDigits:d,maximumFractionDigits:d});
+const fpc  = (v,d=2) => (v>=0?'+':'') + fnum(v,d) + '%';
+const fh   = t => new Date(t).toLocaleString('es-ES',{day:'2-digit',month:'short',
+              hour:'2-digit',minute:'2-digit',timeZone:'UTC'});
+const fd   = t => new Date(t).toLocaleDateString('es-ES',{day:'2-digit',month:'short',timeZone:'UTC'});
+
+let RANGO = 'todo', AGREG = 'nativa';
+const RANGOS = [['24h',24],['7d',24*7],['30d',24*30],['todo',null]];
+const AGREGS = [['nativa',0],['1h',1],['4h',4],['1d',24]];
+
+/* ── tema ─────────────────────────────────────────────────── */
+$('#btema').onclick = () => {
+  const r = document.documentElement;
+  const a = r.getAttribute('data-tema');
+  const oscuro = a ? a==='oscuro'
+    : matchMedia('(prefers-color-scheme:dark)').matches;
+  r.setAttribute('data-tema', oscuro ? 'claro' : 'oscuro');
+  pintar();
+};
+
+/* ── preparacion de datos ─────────────────────────────────── */
+function filtrada(){
+  let s = D.serie;
+  if(!s.length) return [];
+  const h = RANGOS.find(r=>r[0]===RANGO)[1];
+  if(h){ const corte = s[s.length-1].t - h*3600e3; s = s.filter(p=>p.t>=corte); }
+  const paso = AGREGS.find(a=>a[0]===AGREG)[1];
+  if(paso>0 && s.length>1){
+    const ms = paso*3600e3, cubos = new Map();
+    s.forEach(p=>{ cubos.set(Math.floor(p.t/ms)*ms, p); });
+    s = [...cubos.entries()].sort((a,b)=>a[0]-b[0]).map(([k,v])=>({...v,t:k}));
+  }
+  return s;
+}
+function serieDd(s){
+  let pico = -Infinity;
+  return s.map(p=>{ pico = Math.max(pico,p.p); return {t:p.t, v:(p.p/pico-1)*100}; });
+}
+function barras(s){
+  if(s.length<2) return [];
+  const paso = AGREGS.find(a=>a[0]===AGREG)[1] || 24;
+  const ms = Math.max(paso,1)*3600e3, cubos = new Map();
+  s.forEach(p=>{ const k = Math.floor(p.t/ms)*ms;
+    if(!cubos.has(k)) cubos.set(k,{ini:p.p,fin:p.p}); else cubos.get(k).fin = p.p; });
+  const arr = [...cubos.entries()].sort((a,b)=>a[0]-b[0]);
+  const out = [];
+  for(let i=1;i<arr.length;i++)
+    out.push({t:arr[i][0], v:(arr[i][1].fin/arr[i-1][1].fin-1)*100});
+  return out;
+}
+
+/* ── motor de graficos ────────────────────────────────────── */
+function ejeY(min,max,n=4){
+  if(min===max){min-=1;max+=1;}
+  const paso=(max-min)/n, out=[];
+  for(let i=0;i<=n;i++) out.push(min+paso*i);
+  return out;
+}
+function marcoX(s,W){
+  if(s.length<2) return [];
+  const t0=s[0].t,t1=s[s.length-1].t, out=[];
+  for(const f of [0,.25,.5,.75,1]){
+    const t=t0+(t1-t0)*f;
+    out.push({x:f*W, txt:(t1-t0)>3*86400e3?fd(t):fh(t)});
+  }
+  return out;
+}
+function linea(cont,tip,datos,acc,color,relleno,sufijo,fmt){
+  cont.querySelectorAll('svg').forEach(e=>e.remove());
+  if(datos.length<2){
+    const v=document.createElement('div'); v.className='vacio';
+    v.textContent='Hacen falta al menos 2 marcas para dibujar.';
+    v.dataset.tmp='1'; cont.querySelectorAll('[data-tmp]').forEach(e=>e.remove());
+    cont.appendChild(v); return;
+  }
+  cont.querySelectorAll('[data-tmp]').forEach(e=>e.remove());
+  const W=Math.max(cont.clientWidth||900,320),H=230,PL=54,PB=22;
+  const xs=datos.map(d=>d.t), ys=datos.map(acc);
+  const t0=xs[0],t1=xs[xs.length-1];
+  let y0=Math.min(...ys),y1=Math.max(...ys);
+  // el margen se calcula sobre el RANGO, no sobre el valor absoluto: si no,
+  // una curva alrededor de 10.000 se aplasta contra un eje de +-200
+  const rango=y1-y0;
+  const m=rango>0?rango*.14:Math.max(Math.abs(y1)*.001,1e-6);
+  y0-=m; y1+=m;
+  if(sufijo==='%'){ if(y0>0) y0=0; if(y1<0) y1=0; }
+  const px=t=>PL+(t-t0)/(t1-t0||1)*(W-PL);
+  const py=v=>(H-PB)-(v-y0)/(y1-y0||1)*(H-PB);
+  const pts=datos.map((d,i)=>`${px(xs[i]).toFixed(1)},${py(ys[i]).toFixed(1)}`).join(' ');
+  const base=py(Math.max(y0,Math.min(0,y1)));
+  let g='';
+  for(const v of ejeY(y0,y1)){
+    const y=py(v);
+    g+=`<line x1="${PL}" y1="${y.toFixed(1)}" x2="${W}" y2="${y.toFixed(1)}" class="rej"/>`+
+       `<text x="${PL-7}" y="${(y+3.5).toFixed(1)}" class="ejeTx" text-anchor="end">${fmt(v)}</text>`;
+  }
+  for(const t of marcoX(datos,W-PL))
+    g+=`<text x="${(PL+t.x).toFixed(0)}" y="${H-4}" class="ejeTx" text-anchor="middle">${t.txt}</text>`;
+  const svg=`<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}">
+    ${g}
+    <polygon points="${PL},${base.toFixed(1)} ${pts} ${W},${base.toFixed(1)}" fill="${relleno}"/>
+    <polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.8"
+      stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
+    <g id="hov"><line class="cruz" y1="0" y2="${H-PB}" style="opacity:0"/>
+      <circle r="3.5" fill="${color}" style="opacity:0"/></g>
+    <rect x="${PL}" y="0" width="${W-PL}" height="${H-PB}" fill="transparent" id="cap"/>
+  </svg>`;
+  cont.insertAdjacentHTML('afterbegin',svg);
+  const s=cont.querySelector('svg'), hov=s.querySelector('#hov'),
+        ln=hov.querySelector('line'), ci=hov.querySelector('circle');
+  s.querySelector('#cap').addEventListener('mousemove',ev=>{
+    const r=s.getBoundingClientRect();
+    const tx=t0+((ev.clientX-r.left)/r.width*W-PL)/(W-PL)*(t1-t0);
+    let k=0,mej=Infinity;
+    datos.forEach((d,i)=>{const dd=Math.abs(d.t-tx); if(dd<mej){mej=dd;k=i;}});
+    const X=px(xs[k]),Y=py(ys[k]);
+    ln.setAttribute('x1',X); ln.setAttribute('x2',X); ln.style.opacity=.6;
+    ci.setAttribute('cx',X); ci.setAttribute('cy',Y); ci.style.opacity=1;
+    tip.innerHTML=`<div class="f">${fh(datos[k].t)} UTC</div><b>${fmt(ys[k])}</b>`;
+    tip.style.opacity=1;
+    const izq=(X/W)*r.width;
+    tip.style.left=Math.min(Math.max(izq-tip.offsetWidth/2,0),r.width-tip.offsetWidth)+'px';
+    tip.style.top=Math.max((Y/H)*r.height-tip.offsetHeight-10,0)+'px';
+  });
+  s.addEventListener('mouseleave',()=>{tip.style.opacity=0;
+    ln.style.opacity=0; ci.style.opacity=0;});
+}
+function barrasGraf(cont,tip,datos){
+  cont.querySelectorAll('svg,[data-tmp]').forEach(e=>e.remove());
+  if(!datos.length){
+    cont.insertAdjacentHTML('afterbegin',
+      '<div class="vacio" data-tmp="1">Aún no hay periodos completos.</div>'); return;
+  }
+  const W=Math.max(cont.clientWidth||900,320),H=230,PL=54,PB=22;
+  const ys=datos.map(d=>d.v);
+  let y0=Math.min(0,...ys),y1=Math.max(0,...ys);
+  const m=Math.max((y1-y0)*.16,1e-6); y0-=m; y1+=m;
+  const py=v=>(H-PB)-(v-y0)/(y1-y0||1)*(H-PB);
+  const an=Math.max((W-PL)/datos.length*.62,1.5);
+  let g='';
+  for(const v of ejeY(y0,y1)){
+    const y=py(v);
+    g+=`<line x1="${PL}" y1="${y.toFixed(1)}" x2="${W}" y2="${y.toFixed(1)}" class="rej"/>`+
+       `<text x="${PL-7}" y="${(y+3.5).toFixed(1)}" class="ejeTx" text-anchor="end">${fpc(v,2)}</text>`;
+  }
+  const c0=py(0);
+  datos.forEach((d,i)=>{
+    const x=PL+(i+.5)/datos.length*(W-PL), y=py(d.v);
+    const col=d.v>=0?'var(--pos)':'var(--neg)';
+    g+=`<rect x="${(x-an/2).toFixed(1)}" y="${Math.min(y,c0).toFixed(1)}"
+        width="${an.toFixed(1)}" height="${Math.max(Math.abs(y-c0),1).toFixed(1)}"
+        fill="${col}" rx="1" data-i="${i}"/>`;
+  });
+  for(const t of marcoX(datos,W-PL))
+    g+=`<text x="${(PL+t.x).toFixed(0)}" y="${H-4}" class="ejeTx" text-anchor="middle">${t.txt}</text>`;
+  cont.insertAdjacentHTML('afterbegin',
+    `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}">${g}</svg>`);
+  const s=cont.querySelector('svg'), r0=()=>s.getBoundingClientRect();
+  s.querySelectorAll('rect[data-i]').forEach(rect=>{
+    rect.addEventListener('mousemove',ev=>{
+      const d=datos[+rect.dataset.i], r=r0();
+      tip.innerHTML=`<div class="f">${fd(d.t)} UTC</div><b class="${d.v>=0?'pos':'neg'}">${fpc(d.v,3)}</b>`;
+      tip.style.opacity=1;
+      tip.style.left=Math.min(Math.max(ev.clientX-r.left-tip.offsetWidth/2,0),r.width-tip.offsetWidth)+'px';
+      tip.style.top=Math.max(ev.clientY-r.top-tip.offsetHeight-12,0)+'px';
+    });
+  });
+  s.addEventListener('mouseleave',()=>tip.style.opacity=0);
+}
+function timeline(cont,tip){
+  cont.querySelectorAll('svg,[data-tmp]').forEach(e=>e.remove());
+  const tr=D.tramos;
+  if(!tr.length){ cont.insertAdjacentHTML('afterbegin',
+    '<div class="vacio" data-tmp="1">Todavía no se ha abierto ningún tramo.</div>'); return; }
+  const ahora=Date.now();
+  const t0=Math.min(...tr.map(t=>t.ini));
+  const t1=Math.max(ahora,...tr.map(t=>t.fin||ahora));
+  const W=Math.max(cont.clientWidth||900,320),fila=26,H=tr.length*fila+30,PL=54;
+  const px=t=>PL+(t-t0)/(t1-t0||1)*(W-PL);
+  let g='';
+  for(const f of [0,.25,.5,.75,1]){
+    const x=PL+f*(W-PL), t=t0+(t1-t0)*f;
+    g+=`<line x1="${x.toFixed(0)}" y1="0" x2="${x.toFixed(0)}" y2="${H-26}" class="rej"/>`+
+       `<text x="${x.toFixed(0)}" y="${H-8}" class="ejeTx" text-anchor="middle">${fd(t)}</text>`;
+  }
+  tr.forEach((t,i)=>{
+    const y=i*fila+6, x1=px(t.ini), x2=px(t.fin||ahora);
+    const col=t.abierto?'var(--acento)':(t.ret>=0?'var(--pos)':'var(--neg)');
+    const op=t.abierto?.55:.85;
+    g+=`<text x="${PL-7}" y="${y+13}" class="ejeTx" text-anchor="end">T${t.id}</text>`+
+       `<rect x="${x1.toFixed(1)}" y="${y}" width="${Math.max(x2-x1,3).toFixed(1)}"
+        height="15" rx="4" fill="${col}" opacity="${op}" data-i="${i}"/>`;
+    if(t.tardio) g+=`<text x="${(x2+5).toFixed(1)}" y="${y+12}" class="ejeTx"
+        fill="var(--avisoTx)">tardío</text>`;
+  });
+  cont.insertAdjacentHTML('afterbegin',
+    `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}">${g}</svg>`);
+  const s=cont.querySelector('svg');
+  s.querySelectorAll('rect[data-i]').forEach(rect=>{
+    rect.addEventListener('mousemove',ev=>{
+      const t=tr[+rect.dataset.i], r=s.getBoundingClientRect();
+      tip.innerHTML=`<div class="f">Tramo ${t.id} · ${t.n} posiciones · peso ${fnum(t.peso,2)}x</div>`+
+        (t.abierto?`abierto desde ${fh(t.ini)}<br><b>en curso</b>`
+          :`${fh(t.ini)} → ${fh(t.fin)}<br><b class="${t.ret>=0?'pos':'neg'}">${fpc(t.ret*100,3)}</b> en ${fnum(t.horas,1)} h`);
+      tip.style.opacity=1;
+      tip.style.left=Math.min(Math.max(ev.clientX-r.left-tip.offsetWidth/2,0),r.width-tip.offsetWidth)+'px';
+      tip.style.top=Math.max(ev.clientY-r.top-tip.offsetHeight-12,0)+'px';
+    });
+  });
+  s.addEventListener('mouseleave',()=>tip.style.opacity=0);
+}
+
+/* ── metricas y tablas ────────────────────────────────────── */
+function kpis(s){
+  const c=$('#kpis');
+  if(!s.length){ c.innerHTML=''; return; }
+  const ult=s[s.length-1], pri=s[0];
+  const dd=serieDd(s), ddmin=Math.min(...dd.map(d=>d.v));
+  const porDia=new Map();
+  D.serie.forEach(p=>porDia.set(new Date(p.t).toISOString().slice(0,10),p.p));
+  const dias=[...porDia.entries()].sort();
+  const rets=[]; for(let i=1;i<dias.length;i++) rets.push(dias[i][1]/dias[i-1][1]-1);
+  const med=rets.length?rets.reduce((a,b)=>a+b,0)/rets.length:0;
+  const sd=rets.length>1?Math.sqrt(rets.reduce((a,b)=>a+(b-med)**2,0)/(rets.length-1)):0;
+  const sharpe=sd>0?med/sd*Math.sqrt(365):null;
+  const pos=rets.length?rets.filter(r=>r>0).length/rets.length*100:null;
+  const rr=(ult.p/pri.p-1)*100;
+  const expo=ult.n*(D.apalancamiento/3);
+  const tarj=(et,va,cl,nt)=>`<div class="kpi"><div class="et">${et}</div>
+    <div class="va ${cl||'neu'}">${va}</div>${nt?`<div class="nt">${nt}</div>`:''}</div>`;
+  c.innerHTML =
+    tarj('Patrimonio', fnum(ult.p)+' <span style="font-size:13px;color:var(--tx2)">USDT</span>','neu',
+         'Capital inicial '+fnum(D.capital,0)) +
+    tarj('Retorno del rango', fpc(rr,3), rr>=0?'pos':'neg', RANGO==='todo'?'desde el inicio':'últimas '+RANGO) +
+    tarj('Retorno total', fpc(ult.r,3), ult.r>=0?'pos':'neg','acumulado') +
+    tarj('Max drawdown', fnum(ddmin,2)+'%', ddmin<-0.001?'neg':'neu','en el rango') +
+    tarj('Sharpe', sharpe===null?'—':fnum(sharpe,2), sharpe===null?'neu':(sharpe>0?'pos':'neg'),
+         rets.length>2?`${rets.length} días`:'faltan días') +
+    tarj('Días positivos', pos===null?'—':fnum(pos,0)+'%','neu', rets.length+' días') +
+    tarj('Exposición', fnum(expo,2)+'x','neu', ult.n+' de 3 tramos') +
+    tarj('Latente', fnum(ult.l,2),Math.abs(ult.l)<.005?'neu':(ult.l>=0?'pos':'neg'),'sin realizar');
+}
+function tablas(){
+  const ab=D.abiertas;
+  $('#tAb').innerHTML = `<h2>Posiciones abiertas</h2>
+    <div class="h2n">${ab.length} tramo${ab.length===1?'':'s'} en curso</div>` +
+    (ab.length? ab.map(t=>{
+      const edad=(Date.now()-t.ini)/3600e3;
+      return `<div style="padding:9px 0;border-top:1px solid var(--linea2)">
+        <b>Tramo ${t.id}</b> · peso ${fnum(t.peso,2)}x ·
+        <span class="num">${fnum(edad,1)} h</span> de ${D.tenencia} h
+        <span style="color:var(--tx2)">(cierra en ${fnum(Math.max(D.tenencia-edad,0),1)} h)</span>
+        <details><summary>${t.largos.length} largos · ${t.cortos.length} cortos</summary>
+          <div style="margin-top:7px;font-size:11.5px;color:var(--pos)">LARGOS</div>
+          <div class="simb">${t.largos.map(s=>`<span>${s.replace('USDT','')}</span>`).join('')}</div>
+          <div style="margin-top:9px;font-size:11.5px;color:var(--neg)">CORTOS</div>
+          <div class="simb">${t.cortos.map(s=>`<span>${s.replace('USDT','')}</span>`).join('')}</div>
+        </details></div>`;}).join('')
+      : '<div class="vacio">Sin posiciones abiertas.</div>');
+
+  const ci=[...D.cierres].reverse();
+  const tardios=ci.filter(c=>c.tardio).length;
+  $('#tCi').innerHTML = `<h2>Cierres de tramo</h2>
+    <div class="h2n">${ci.length} cerrado${ci.length===1?'':'s'}${tardios?` · ${tardios} con retraso`:''}</div>` +
+    (ci.length? `<table><thead><tr><th>Cierre</th><th>Tramo</th><th>Duración</th>
+      <th class="der">Bruto</th><th class="der">Cesta</th></tr></thead><tbody>` +
+      ci.slice(0,25).map(c=>`<tr><td>${fh(c.t)}</td><td>T${c.id}</td>
+        <td>${fnum(c.h,1)} h ${c.tardio?'<span class="eti">tardío</span>':''}</td>
+        <td class="der ${c.r>=0?'pos':'neg'}">${fpc(c.r*100,3)}</td>
+        <td class="der">${c.nl}L / ${c.ns}C</td></tr>`).join('') + '</tbody></table>'
+      : '<div class="vacio">Ningún tramo ha cerrado todavía. El primero vence a las 48 h.</div>');
+}
+function avisos(){
+  const a=[], s=D.serie;
+  const ab=D.abiertas.length;
+  if(ab<3) a.push(`Solo hay <b>${ab} de 3 tramos</b> abiertos: la exposición es
+    ${fnum(ab*(D.apalancamiento/3),2)}x en vez de ${fnum(D.apalancamiento,0)}x y la volatilidad
+    es mayor que la de la estrategia validada. Se completa en las primeras 32 h.`);
+  const dias=new Set(s.map(p=>new Date(p.t).toISOString().slice(0,10))).size;
+  if(dias<14) a.push(`Llevas <b>${dias} día${dias===1?'':'s'}</b> de registro. El retorno
+    esperado es +0,185% diario contra 0,67% de volatilidad, así que el ruido supera
+    a la señal por tres en el corto plazo: no interpretes nada antes de dos semanas.`);
+  const t=D.cierres.filter(c=>c.tardio).length;
+  if(t) a.push(`<b>${t} cierre${t===1?'':'s'} con retraso</b>: hubo huecos de ejecución
+    y esos tramos duraron más de 48 h.`);
+  $('#avisos').innerHTML=a.map(x=>`<div class="aviso">${x}</div>`).join('');
+}
+
+/* ── render ───────────────────────────────────────────────── */
+function segmentos(){
+  $('#rango').innerHTML=RANGOS.map(([k])=>
+    `<button data-k="${k}" aria-pressed="${k===RANGO}">${k}</button>`).join('');
+  $('#agreg').innerHTML=AGREGS.map(([k])=>
+    `<button data-k="${k}" aria-pressed="${k===AGREG}">${k}</button>`).join('');
+  $('#rango').querySelectorAll('button').forEach(b=>b.onclick=()=>{RANGO=b.dataset.k;pintar();});
+  $('#agreg').querySelectorAll('button').forEach(b=>b.onclick=()=>{AGREG=b.dataset.k;pintar();});
+}
+function pintar(){
+  segmentos();
+  const s=filtrada();
+  $('#sub').innerHTML = D.serie.length
+    ? `${D.serie.length} marcas · desde ${fh(D.serie[0].t)} UTC · generado ${D.generado} UTC`
+    : 'Sin datos todavía';
+  $('#estado').textContent = D.abiertas.length
+    ? `${D.abiertas.length}/3 tramos activos` : 'en espera';
+  $('#tituloEq').textContent = `Valor de la cartera · ${s.length} puntos`;
+  $('#tituloBar').textContent = AGREG==='nativa'
+    ? 'Variación entre marcas consecutivas' : `Variación por bloque de ${AGREG}`;
+  avisos(); kpis(s); tablas();
+  const rg = s.length? Math.max(...s.map(p=>p.p))-Math.min(...s.map(p=>p.p)) : 1;
+  const dec = rg>=200?0 : rg>=20?1 : rg>=2?2 : 3;
+  linea($('#cEq'),$('#tipEq'),s,p=>p.p,'var(--acento)','var(--acentoSuave)','',
+        v=>fnum(v,dec));
+  const dd=serieDd(s);
+  linea($('#cDd'),$('#tipDd'),dd,p=>p.v,'var(--neg)','var(--negSuave)','%',
+        v=>fnum(v,2)+'%');
+  barrasGraf($('#cBar'),$('#tipBar'),barras(s));
+  timeline($('#cTr'),$('#tipTr'));
+}
+pintar();
+let temporizador;
+addEventListener('resize',()=>{clearTimeout(temporizador);
+  temporizador=setTimeout(pintar,140);});
+</script>
+"""
+
+html = HTML.replace("__DATOS__", json.dumps(datos, ensure_ascii=False,
+                                            separators=(",", ":")))
+with open(SALIDA, "w", encoding="utf-8") as fh:
+    fh.write(html)
+print(f"Panel generado: {SALIDA}  ({len(html)/1024:.0f} KB, "
+      f"{len(datos['serie'])} marcas, {len(datos['cierres'])} cierres)")
