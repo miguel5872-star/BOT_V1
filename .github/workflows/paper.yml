@@ -1,0 +1,53 @@
+name: bot de papel
+
+on:
+  schedule:
+    # cada hora en punto (UTC). GitHub puede retrasarlo 5-20 min si va cargado;
+    # para un horizonte de 48 h es irrelevante.
+    - cron: "0 * * * *"
+  workflow_dispatch:        # permite lanzarlo a mano desde la pestaña Actions
+
+permissions:
+  contents: write
+
+concurrency:
+  group: paper-bot          # nunca dos ejecuciones a la vez
+  cancel-in-progress: false
+
+jobs:
+  paso:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: ejecutar un ciclo
+        run: python bot.py step
+
+      - name: actualizar README
+        run: python bot.py readme
+
+      - name: verificar integridad de la cadena
+        run: python bot.py verificar
+
+      - name: guardar el estado en el repositorio
+        run: |
+          git config user.name  "paper-bot"
+          git config user.email "paper-bot@users.noreply.github.com"
+          git add papel/ README.md
+          if git diff --staged --quiet; then
+            echo "sin cambios"
+          else
+            git commit -m "paso $(date -u +'%Y-%m-%dT%H:%MZ')"
+            for i in 1 2 3; do
+              git pull --rebase --autostash && git push && break
+              echo "reintento $i"; sleep 5
+            done
+          fi
