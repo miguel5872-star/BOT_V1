@@ -8,15 +8,15 @@ perpetuos de altcoin. **Dinero ficticio.** No es asesoramiento financiero.
 <!--ESTADO-->
 | Metrica | Valor |
 |---|---|
-| Patrimonio | **9,994.48 USDT** |
-| Retorno acumulado | **-0.055%** |
-| Max drawdown | -0.09% |
-| Marcas / dias | 3 / 0 |
+| Patrimonio | **9,977.48 USDT** |
+| Retorno acumulado | **-0.225%** |
+| Max drawdown | -0.23% |
+| Marcas / dias | 5 / 0 |
 | Tramos abiertos | 1/3 |
 | Cierres tardios | 0 |
 
-Ultima actualizacion: **2026-08-17 03:31 UTC**  
-Hash del registro: `558d77b898677211b64866c382323b98cf003ebc`
+Ultima actualizacion: **2026-08-17 04:31 UTC**  
+Hash del registro: `3ff7b56cff2f0539ecfbcb36acd73e97783418e5`
 <!--/ESTADO-->
 
 ## Estado del despliegue
