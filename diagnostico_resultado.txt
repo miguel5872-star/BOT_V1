@@ -1,0 +1,31 @@
+==============================================================================
+DIAGNOSTICO DE CONECTIVIDAD DESDE EL RUNNER
+==============================================================================
+  IP publica del runner: 172.171.102.173
+  no se pudo determinar la IP: Expecting value: line 1 column 1 (char 0)
+
+  Perpetuos con funding (lo que necesita la estrategia):
+  FALLO Bybit                    HTTP 403     155 ms
+        -> {     error:The Amazon CloudFront distribution is configured to block access from your country }
+  FALLO Binance futuros          HTTP 451     194 ms
+        -> {   "code": 0,   "msg": "Service unavailable from a restricted location according to 'b. Eligibility' in https://www.bin
+  OK  OKX                      HTTP 200     228 ms (447 elementos)
+  OK  Gate.io                  HTTP 200    1426 ms
+  OK  MEXC                     HTTP 200     429 ms (1110 elementos)
+  OK  Bitget                   HTTP 200     349 ms (754 elementos)
+  OK  KuCoin futuros           HTTP 200     245 ms (670 elementos)
+  FALLO Hyperliquid (meta)       HTTP 405     177 ms
+        -> 
+  OK  dYdX v4                  HTTP 200     491 ms
+
+  Datos historicos:
+  OK  data.binance.vision      HTTP 200     704 ms
+  FALLO Bybit funding hist       HTTP 403      11 ms
+        -> {     error:The Amazon CloudFront distribution is configured to block access from your country }
+  OK  Gate funding hist        HTTP 200     103 ms
+  OK  MEXC funding hist        HTTP 200     126 ms
+
+==============================================================================
+  ALCANZABLES: okx, gate, mexc, bitget, kucoin, dydx
+  BLOQUEADOS : bybit, binance, hyperliquid
+==============================================================================
