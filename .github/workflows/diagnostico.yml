@@ -1,0 +1,21 @@
+name: diagnostico de conectividad
+
+on:
+  push:
+    paths:
+      - "diagnostico.py"
+      - ".github/workflows/diagnostico.yml"
+  workflow_dispatch:
+
+jobs:
+  probar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install requests
+      - name: que exchanges responden desde aqui
+        run: python diagnostico.py
