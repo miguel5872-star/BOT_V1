@@ -1,0 +1,63 @@
+<title>Bot de papel — momentum de funding</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+:root {
+  --fondo:#fbfbfa; --texto:#1c1b19; --suave:#6b6960; --borde:#e3e1dc;
+  --tarjeta:#ffffff; --linea:#2f6f4f; --area:rgba(47,111,79,.12);
+  --rojo:#a33b32; --areaRojo:rgba(163,59,50,.12); --rej:#efedea;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --fondo:#17171a; --texto:#eceae5; --suave:#9a978e; --borde:#2c2c30;
+    --tarjeta:#1e1e22; --linea:#63b58a; --area:rgba(99,181,138,.14);
+    --rojo:#e0736a; --areaRojo:rgba(224,115,106,.14); --rej:#26262a;
+  }
+}
+* { box-sizing:border-box; }
+body { margin:0; padding:24px 16px 48px; background:var(--fondo); color:var(--texto);
+  font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+.env { max-width:940px; margin:0 auto; }
+h1 { font-size:22px; margin:0 0 4px; letter-spacing:-.01em; }
+.sub { color:var(--suave); font-size:13px; margin:0 0 22px; }
+.res { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
+  gap:1px; background:var(--borde); border:1px solid var(--borde);
+  border-radius:10px; overflow:hidden; margin-bottom:22px; }
+.m { background:var(--tarjeta); padding:12px 14px; display:flex;
+  flex-direction:column; gap:3px; }
+.k { font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--suave); }
+.v { font-size:19px; font-variant-numeric:tabular-nums; }
+.tarjeta { background:var(--tarjeta); border:1px solid var(--borde);
+  border-radius:10px; padding:16px 18px; margin-bottom:18px; }
+h3 { font-size:13px; text-transform:uppercase; letter-spacing:.06em;
+  color:var(--suave); margin:0 0 12px; font-weight:600; }
+.svg { width:100%; height:auto; display:block; overflow:visible; }
+.rej { stroke:var(--rej); stroke-width:1; }
+.eje { fill:var(--suave); font-size:11px; font-family:inherit; }
+table { width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums; }
+th { text-align:left; font-size:11px; text-transform:uppercase;
+  letter-spacing:.05em; color:var(--suave); font-weight:600;
+  padding:0 10px 8px 0; }
+td { padding:6px 10px 6px 0; border-top:1px solid var(--borde); font-size:14px; }
+.pos { color:var(--linea); } .neg { color:var(--rojo); }
+.vacio { background:var(--tarjeta); border:1px dashed var(--borde);
+  border-radius:10px; padding:28px; text-align:center; color:var(--suave); }
+.nota { font-size:12px; color:var(--suave); margin:12px 0 0; }
+code { background:var(--rej); padding:2px 6px; border-radius:4px; font-size:13px; }
+footer { color:var(--suave); font-size:12px; margin-top:26px;
+  border-top:1px solid var(--borde); padding-top:14px; }
+</style>
+<div class="env">
+  <h1>Bot de papel — momentum de funding</h1>
+  <p class="sub">Mercado neutral sobre perpetuos USDT. Dinero ficticio.
+     Generado el 2026-08-17 03:10 UTC.</p>
+  <div class="res"><div class="m"><span class="k">Patrimonio</span><span class="v">10,000.00 USDT</span></div><div class="m"><span class="k">Retorno</span><span class="v">+0.000%</span></div><div class="m"><span class="k">Max drawdown</span><span class="v">0.00%</span></div><div class="m"><span class="k">Marcas</span><span class="v">1</span></div><div class="m"><span class="k">Dias</span><span class="v">0</span></div><div class="m"><span class="k">Tramos abiertos</span><span class="v">1/3</span></div></div>
+  <div class="vacio">Retorno acumulado: hacen falta al menos 2 marcas</div><div class="vacio">Drawdown: hacen falta al menos 2 marcas</div><div class="tarjeta"><h3>Tramos abiertos</h3>
+        <table><tr><th>Id</th><th>Abierto</th><th>Cesta</th><th>Peso</th></tr>
+        <tr><td>0</td><td>2026-08-17T01:46</td><td>148 posiciones</td><td>1.00x</td></tr></table></div>
+  <footer>
+    Estrategia: funding acumulado de 72 h, largo el 20% superior y corto el 20%
+    inferior, tres tramos solapados de 48 h. Costes aplicados: 0,05% de comision
+    y 0,05% de deslizamiento por lado.<br>
+    Esto no es asesoramiento financiero.
+  </footer>
+</div>

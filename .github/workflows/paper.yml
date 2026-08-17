@@ -42,6 +42,9 @@ jobs:
       - name: actualizar README
         run: python bot.py readme
 
+      - name: generar el panel HTML
+        run: python grafica.py
+
       - name: verificar integridad de la cadena
         run: python bot.py verificar
 
@@ -49,7 +52,7 @@ jobs:
         run: |
           git config user.name  "paper-bot"
           git config user.email "paper-bot@users.noreply.github.com"
-          git add papel/ README.md
+          git add papel/ README.md index.html
           if git diff --staged --quiet; then
             echo "sin cambios"
           else
