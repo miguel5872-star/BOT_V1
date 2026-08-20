@@ -176,7 +176,7 @@
    },
    "peso": 1.0,
    "coste_cierre": 0.002,
-   "valor_actual": -0.009921399605497608
+   "valor_actual": -0.010338350537572458
   },
   {
    "id": 3,
@@ -390,9 +390,9 @@
    },
    "peso": 1.0,
    "coste_cierre": 0.002,
-   "valor_actual": -0.0009109555486477916
+   "valor_actual": -0.0008701017751671196
   }
  ],
  "paso": 4,
- "pasos_ejecutados": 14
+ "pasos_ejecutados": 15
 }
